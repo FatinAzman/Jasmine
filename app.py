@@ -96,6 +96,12 @@ def save_creds(creds):
     }))
 
 # =============================
+# Header (shown even before login)
+# =============================
+st.title("Jasmine 🌸")
+st.caption("Spend smart. Split easy.")
+
+# =============================
 # Login
 # =============================
 if "creds" not in st.session_state:
@@ -106,7 +112,10 @@ params = st.query_params
 if st.session_state.creds is None and "code" not in params:
     flow = build_flow()
     url, _ = flow.authorization_url(prompt="consent", access_type="offline")
+
+    st.markdown("")  # small spacer
     st.link_button("Sign in with Google", url)
+
     st.stop()
 
 if st.session_state.creds is None and "code" in params:
