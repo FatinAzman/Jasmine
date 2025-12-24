@@ -302,5 +302,6 @@ with tab_add:
 # HISTORY TAB
 # =============================
 with tab_history:
-    st.info("History will appear here.")
+    st.info("Spending history will appear here 💸")
+
 
