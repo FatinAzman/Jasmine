@@ -26,7 +26,7 @@ CLIENT_SECRET = st.secrets["google_oauth"]["client_secret"]
 REDIRECT_URI = st.secrets["google_oauth"]["redirect_uri"]
 
 # =============================
-# Styling (pink, not red)
+# Styling
 # =============================
 st.markdown("""
 <style>
@@ -35,8 +35,6 @@ div[data-baseweb="segmented-control"] button[aria-checked="true"] {
     border-color:#FB7185 !important;
     color:white !important;
 }
-.subbox { background:#1f2937; border-radius:12px; padding:16px; }
-.createbox { background:#111827; border-radius:12px; padding:12px; }
 .big-number { font-size:40px; font-weight:600; }
 .muted { color:#9CA3AF; }
 </style>
@@ -96,7 +94,66 @@ def save_creds(creds):
     }))
 
 # =============================
-# Header (shown even before login)
+# Google Drive helpers
+# =============================
+def drive_service():
+    return build("drive", "v3", credentials=st.session_state.creds)
+
+def get_or_create_folder(service, name, parent_id=None):
+    q = f"name='{name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+    if parent_id:
+        q += f" and '{parent_id}' in parents"
+
+    res = service.files().list(q=q, fields="files(id)").execute()
+    if res["files"]:
+        return res["files"][0]["id"]
+
+    metadata = {"name": name, "mimeType": "application/vnd.google-apps.folder"}
+    if parent_id:
+        metadata["parents"] = [parent_id]
+
+    folder = service.files().create(body=metadata, fields="id").execute()
+    return folder["id"]
+
+def init_drive_structure():
+    service = drive_service()
+
+    root = get_or_create_folder(service, APP_FOLDER_NAME)
+
+    defaults = {
+        "Spending Tracker": ["Spending", "Debt", "Etc"],
+        "Income Tax Tracker": ["Health", "Zakat", "Electronics", "Insurance", "Others"],
+        "Split Spending": []
+    }
+
+    folder_map = {}
+    for tracker, cats in defaults.items():
+        t_id = get_or_create_folder(service, tracker, root)
+        folder_map[tracker] = {"_id": t_id}
+        for c in cats:
+            folder_map[tracker][c] = get_or_create_folder(service, c, t_id)
+
+    st.session_state["drive_folders"] = folder_map
+
+def upload_receipt(file, tracker, category, meta):
+    service = drive_service()
+    folder_id = st.session_state["drive_folders"][tracker][category]
+
+    suffix = Path(file.name).suffix
+    filename = f"{meta['date']}_{meta['merchant']}_{meta['amount']}_{meta['currency']}{suffix}"
+
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        tmp.write(file.getbuffer())
+        media = MediaFileUpload(tmp.name, resumable=True)
+
+    service.files().create(
+        media_body=media,
+        body={"name": filename, "parents": [folder_id]},
+        fields="id"
+    ).execute()
+
+# =============================
+# Header
 # =============================
 st.title("Jasmine 🌸")
 st.caption("Spend smart. Split easy.")
@@ -112,10 +169,7 @@ params = st.query_params
 if st.session_state.creds is None and "code" not in params:
     flow = build_flow()
     url, _ = flow.authorization_url(prompt="consent", access_type="offline")
-
-    st.markdown("")  # small spacer
     st.link_button("Sign in with Google", url)
-
     st.stop()
 
 if st.session_state.creds is None and "code" in params:
@@ -125,6 +179,10 @@ if st.session_state.creds is None and "code" in params:
     save_creds(flow.credentials)
     st.query_params.clear()
     st.rerun()
+
+# Init Drive folders once
+if "drive_folders" not in st.session_state:
+    init_drive_structure()
 
 tab_add, tab_history = st.tabs(["➕ Add", "📜 History"])
 
@@ -139,41 +197,29 @@ with tab_add:
         default="Spending Tracker",
     )
 
-    desc = {
-        "Spending Tracker": "Store all of your spending receipts.",
-        "Income Tax Tracker": "Store tax-related receipts.",
-        "Split Spending": "Split expenses with friends or family."
-    }
-    st.caption(desc[tracker])
-
     st.markdown("## Sub Category")
-    st.caption("Choose your category")
 
-    defaults = {
-        "Spending Tracker": ["Spending", "Debt", "Etc"],
-        "Income Tax Tracker": ["Health", "Zakat", "Electronics", "Insurance", "Others"],
-        "Split Spending": []
-    }
-
-    options = defaults[tracker].copy()
+    defaults = list(st.session_state["drive_folders"][tracker].keys())
+    defaults.remove("_id")
     if tracker != "Income Tax Tracker":
-        options.append("➕ Create New")
+        defaults.append("➕ Create New")
 
-    choice = st.selectbox("", options)
-    subcategory = ""
+    choice = st.selectbox("", defaults)
 
     if choice == "➕ Create New":
-        #st.markdown('<div class="createbox">', unsafe_allow_html=True)
         subcategory = st.text_input("Create New Sub Category Name:")
-        #st.markdown('</div>', unsafe_allow_html=True)
+        if subcategory:
+            service = drive_service()
+            parent = st.session_state["drive_folders"][tracker]["_id"]
+            cid = get_or_create_folder(service, subcategory, parent)
+            st.session_state["drive_folders"][tracker][subcategory] = cid
+            st.success("Folder created in Google Drive")
+            st.rerun()
     else:
         subcategory = choice
 
     st.divider()
 
-    # =============================
-    # Receipt info
-    # =============================
     uploaded = st.file_uploader("Upload receipt (JPG / PNG / PDF)")
     purchase_date = st.date_input("Purchase date", date.today())
     merchant = st.text_input("Merchant / Store")
@@ -182,18 +228,13 @@ with tab_add:
     with c1:
         amount = st.number_input("Amount", min_value=0.0)
     with c2:
-        currency = st.selectbox("Currency", ["MYR", "SAR", "USD", "EUR", "TRY", "GBP", "AED", "THB", "SGD", "IDR"])
+        currency = st.selectbox("Currency", ["MYR","SAR","USD","EUR","TRY","GBP","AED","THB","SGD","IDR"])
 
-    amount_myr = to_myr(amount, currency)
     if amount > 0:
         st.markdown(
-            f"""
-            <div class="muted">Converted</div>
-            <div class="big-number">{amount_myr:,.2f} MYR</div>
-            """,
+            f"<div class='big-number'>{to_myr(amount, currency):,.2f} MYR</div>",
             unsafe_allow_html=True
         )
-
 
     # =============================
     # SPLIT LOGIC
@@ -222,7 +263,7 @@ with tab_add:
 
             with c2:
                 if split_mode == "Split Equally":
-                    share = round(amount / n, 2) if amount_myr else 0
+                    share = round(amount / n, 2) if amount else 0
                     st.number_input(
                         f"Amount #{i+1}",
                         value=share,
@@ -290,18 +331,39 @@ with tab_add:
                 st.markdown('<div class="muted">Remaining balance</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="big-number">{remaining:,.2f} {currency}</div>', unsafe_allow_html=True)
 
-    # =============================
-    # SAVE
-    # =============================
-    can_save = uploaded and subcategory.strip()
+    can_save = uploaded is not None and subcategory.strip() != ""
 
-    if st.button("Save", disabled=not can_save):
-        st.success("Saved (logic ready for Drive upload)")
+    save_clicked = st.button("Save", disabled=not can_save)
+
+    if save_clicked:
+        meta = {
+            "date": purchase_date.isoformat(),
+            "merchant": merchant.replace(" ", "_"),
+            "amount": f"{amount:.2f}",
+            "currency": currency
+        }
+
+        upload_receipt(uploaded, tracker, subcategory, meta)
+
+        st.success("Saved to Google Drive 💾")
+
+        # -------- RESET INPUTS --------
+        for k in [
+            "uploaded_file",
+            "purchase_date",
+            "merchant",
+            "amount",
+            "currency"
+        ]:
+            if k in st.session_state:
+                del st.session_state[k]
+
+        # Rerun app with clean state
+        st.rerun()
+
 
 # =============================
 # HISTORY TAB
 # =============================
 with tab_history:
     st.info("Spending history will appear here 💸")
-
-
