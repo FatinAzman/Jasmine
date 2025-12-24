@@ -126,12 +126,6 @@ if st.session_state.creds is None and "code" in params:
     st.query_params.clear()
     st.rerun()
 
-# =============================
-# Header
-# =============================
-st.title("Jasmine 🌸")
-st.caption("Spend smart. Split easy.")
-
 tab_add, tab_history = st.tabs(["➕ Add", "📜 History"])
 
 # =============================
@@ -309,3 +303,4 @@ with tab_add:
 # =============================
 with tab_history:
     st.info("History will appear here.")
+
